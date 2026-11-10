@@ -8,5 +8,5 @@ if [ ! -d frontend/node_modules ]; then
 fi
 npm --prefix frontend run build
 
-go build -o jiyucho.exe .
+go build -ldflags "-H=windowsgui" -o jiyucho.exe .
 echo "built: jiyucho.exe"
