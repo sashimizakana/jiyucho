@@ -14,17 +14,8 @@ stdioのMCPを備えていて、適当に描いた図面をAIに共有できる�
 ## 使い方
 
 ```sh
-go build -o jiyucho.exe .
-./jiyucho.exe
-```
-
-フロントエンド(`frontend/`、Vite + Vue SFC)のビルド結果は `web/` に出力されて Go に埋め込まれます。
-`web/` はコミット済みなので、フロントを触らなければ Node.js なしで `go build` できます。
-
-```sh
-cd frontend
-npm install
-npm run build   # → ../web に出力
+./build.sh   # frontend をビルドして frontend/dist/ に出力し、jiyucho.exe まで作る(初回は npm install も実行)
+./jiyucyo.exe
 ```
 
 開発時は API 用にアプリを起動しておき、Vite の開発サーバーから使います。

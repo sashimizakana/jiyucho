@@ -21,6 +21,8 @@ function updateUndo() {
 let saveTimer = 0;
 let saving = false;
 let pending = false;
+// サーバーに保存済みのストローク(参照で比較して、先頭からの共通部分だけを残し、残りを差分として送る)
+let savedStrokes = [];
 
 export function scheduleSave() {
   status.value = '未保存…';
@@ -59,10 +61,13 @@ async function save() {
       scale = Math.min(1, 2048 / Math.max(bb.w, bb.h));
       layers = engine.renderRegion(bb, scale, null).toDataURL('image/png');
     }
+    const strokes = engine.strokes.slice();
+    let base = 0;
+    while (base < savedStrokes.length && base < strokes.length && savedStrokes[base] === strokes[base]) base++;
     const res = await fetch('/api/images/' + id, {
       method: 'PUT',
       body: JSON.stringify({
-        title: cur.title, paper: cur.paper, strokes: engine.strokes,
+        title: cur.title, paper: cur.paper, base, append: strokes.slice(base),
         bbox: bb, cacheScale: scale, strokeCount: engine.strokes.length,
         layers, thumb: makeThumb(bb),
       }),
@@ -72,8 +77,10 @@ async function save() {
     const i = images.value.findIndex((m) => m.id === id);
     if (i >= 0) images.value.splice(i, 1);
     images.value.unshift(meta);
+    savedStrokes = strokes;
     status.value = '保存しました';
   } catch (e) {
+    savedStrokes = []; // 次回は全ストロークを送り直す
     status.value = '保存に失敗: ' + e.message;
   } finally {
     saving = false;
@@ -108,6 +115,7 @@ export async function openImage(id) {
   cur.id = d.meta.id; cur.title = d.meta.title; cur.paper = d.meta.paper;
   engine.setPaper(cur.paper);
   engine.load(d.strokes);
+  savedStrokes = engine.strokes.slice();
   updateUndo();
   status.value = '';
   persist();
@@ -122,6 +130,7 @@ export async function newImage() {
   cur.id = meta.id; cur.title = ''; cur.paper = meta.paper;
   engine.setPaper(cur.paper);
   engine.load([]);
+  savedStrokes = [];
   updateUndo();
   status.value = '';
   persist();

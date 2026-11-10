@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-//go:embed web
+//go:embed frontend/dist
 var webFS embed.FS
 
 func defaultDataDir() string {
@@ -66,7 +66,7 @@ func runServer(store *Store, port int, open bool, dataDir string) {
 	url := "http://" + ln.Addr().String() + "/"
 
 	mux := http.NewServeMux()
-	sub, _ := fs.Sub(webFS, "web")
+	sub, _ := fs.Sub(webFS, "frontend/dist")
 	mux.Handle("/", noCache(http.FileServer(http.FS(sub))))
 
 	// ブラウザの接続を監視: 全タブが閉じたら終了する

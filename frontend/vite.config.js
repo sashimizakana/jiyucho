@@ -6,7 +6,5 @@ const API = process.env.JIYUCHO_API || 'http://127.0.0.1:8787';
 
 export default defineConfig({
   plugins: [vue()],
-  // ビルド結果は Go 側が go:embed する ../web に出力する
-  build: { outDir: '../web', emptyOutDir: true },
   server: { proxy: { '/api': API } },
 });

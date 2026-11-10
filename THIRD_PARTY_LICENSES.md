@@ -1,6 +1,6 @@
 # Third-party licenses
 
-`frontend/` で npm 経由で取得し、ビルド結果(`web/`)に同梱しているライブラリです。
+`frontend/` で npm 経由で取得し、ビルド結果(`frontend/dist/`)に同梱しているライブラリです。
 
 ## Vue.js 3.5.13
 

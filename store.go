@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,17 +36,23 @@ type Meta struct {
 }
 
 type SaveRequest struct {
-	Title       string          `json:"title"`
-	Paper       string          `json:"paper"`
-	Strokes     json.RawMessage `json:"strokes"`
-	BBox        *BBox           `json:"bbox"`
-	CacheScale  float64         `json:"cacheScale"`
-	StrokeCount int             `json:"strokeCount"`
-	Layers      string          `json:"layers"` // data URL (透明PNG・描画範囲のみ)
-	Thumb       string          `json:"thumb"`  // data URL
+	Title string `json:"title"`
+	Paper string `json:"paper"`
+	// ストロークは差分で保存する: 先頭 Base 本を残し、その後ろを Append で置き換える
+	// (Base が nil ならストロークは変更しない)
+	Base        *int              `json:"base"`
+	Append      []json.RawMessage `json:"append"`
+	BBox        *BBox             `json:"bbox"`
+	CacheScale  float64           `json:"cacheScale"`
+	StrokeCount int               `json:"strokeCount"`
+	Layers      string            `json:"layers"` // data URL (透明PNG・描画範囲のみ)
+	Thumb       string            `json:"thumb"`  // data URL
 }
 
-const DefaultPaper = "#e8dcbc"
+const (
+	DefaultPaper = "#e8dcbc"
+	strokesFile  = "strokes.jsonl" // 1行1ストロークの追記ログ
+)
 
 type Store struct {
 	root string
@@ -127,7 +136,7 @@ func (s *Store) Create(title, paper string) (*Meta, error) {
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(d, "strokes.json"), []byte("[]"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(d, strokesFile), nil, 0o644); err != nil {
 		return nil, err
 	}
 	return m, writeJSON(filepath.Join(d, "meta.json"), m)
@@ -141,7 +150,7 @@ func (s *Store) Get(id string) (*Meta, json.RawMessage, error) {
 		return nil, nil, err
 	}
 	d, _ := s.dir(id)
-	strokes, err := os.ReadFile(filepath.Join(d, "strokes.json"))
+	strokes, err := readStrokes(d)
 	if err != nil {
 		strokes = []byte("[]")
 	}
@@ -172,8 +181,8 @@ func (s *Store) Save(id string, r *SaveRequest) (*Meta, error) {
 	m.CacheScale = r.CacheScale
 	m.StrokeCount = r.StrokeCount
 	m.UpdatedAt = time.Now()
-	if len(r.Strokes) > 0 {
-		if err := os.WriteFile(filepath.Join(d, "strokes.json"), r.Strokes, 0o644); err != nil {
+	if r.Base != nil {
+		if err := writeStrokes(d, *r.Base, r.Append); err != nil {
 			return nil, err
 		}
 	}
@@ -229,4 +238,103 @@ func (s *Store) SaveSettings(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return os.WriteFile(s.settingsPath(), b, 0o644)
+}
+
+// ---------- strokes.jsonl ----------
+
+var errBaseMismatch = errors.New("base mismatch")
+
+// 先頭 n 行ぶん(改行終端のもの)の直後のバイト位置を返す。行が足りなければ errBaseMismatch
+func lineOffset(f *os.File, n int) (int64, error) {
+	if n == 0 {
+		return 0, nil
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	buf := make([]byte, 64*1024)
+	var off int64
+	for {
+		k, err := f.Read(buf)
+		for i := 0; i < k; {
+			j := bytes.IndexByte(buf[i:k], '\n')
+			if j < 0 {
+				break
+			}
+			i += j + 1
+			if n--; n == 0 {
+				return off + int64(i), nil
+			}
+		}
+		off += int64(k)
+		if err == io.EOF {
+			return 0, errBaseMismatch
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+// 先頭 base 本を残し、それ以降を app で置き換える
+func writeStrokes(d string, base int, app []json.RawMessage) error {
+	if base < 0 {
+		return errBaseMismatch
+	}
+	f, err := os.OpenFile(filepath.Join(d, strokesFile), os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	off, err := lineOffset(f, base)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(off); err != nil {
+		return err
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return err
+	}
+	w := bufio.NewWriter(f)
+	var line bytes.Buffer
+	for _, st := range app {
+		line.Reset()
+		if err := json.Compact(&line, st); err != nil { // 1行に収める
+			return err
+		}
+		line.WriteByte('\n')
+		w.Write(line.Bytes())
+	}
+	return w.Flush()
+}
+
+// JSON配列 "[s1,s2,...]" の形で全ストロークを返す(改行で終わっていない書きかけの末尾は無視)
+func readStrokes(d string) ([]byte, error) {
+	f, err := os.Open(filepath.Join(d, strokesFile))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out bytes.Buffer
+	out.WriteByte('[')
+	r := bufio.NewReaderSize(f, 64*1024)
+	first := true
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			if t := bytes.TrimSpace(line); len(t) > 0 {
+				if !first {
+					out.WriteByte(',')
+				}
+				first = false
+				out.Write(t)
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	out.WriteByte(']')
+	return out.Bytes(), nil
 }

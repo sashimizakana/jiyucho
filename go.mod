@@ -1,3 +1,3 @@
-module sketch
+module jiyucho
 
 go 1.22
