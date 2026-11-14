@@ -63,11 +63,11 @@ async function save() {
   status.value = '保存中…';
   const id = cur.id;
   try {
-    const bb = engine.getBBox(8);
+    const bb = engine.getBBoxAll(8); // 画像も含める(MCP の get_image はこのキャッシュを返す)
     let layers = '', scale = 1;
     if (bb) {
       scale = Math.min(1, 2048 / Math.max(bb.w, bb.h));
-      layers = engine.renderRegion(bb, scale, null).toDataURL('image/png');
+      layers = engine.renderRegion(bb, scale, null, true).toDataURL('image/png');
     }
     // 未アップロードの貼り付け画像を先に送る
     for (const p of engine.pics.slice()) {
@@ -85,7 +85,7 @@ async function save() {
       body: JSON.stringify({
         title: cur.title, paper: cur.paper, base, append: strokes.slice(base),
         pics, bbox: bb, cacheScale: scale, strokeCount: engine.strokes.length,
-        layers, thumb: makeThumb(engine.getBBoxAll(8)),
+        layers, thumb: makeThumb(bb),
       }),
     });
     if (!res.ok) throw new Error(await res.text());
