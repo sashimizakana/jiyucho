@@ -33,6 +33,8 @@ type Meta struct {
 	BBox        *BBox     `json:"bbox,omitempty"`
 	CacheScale  float64   `json:"cacheScale,omitempty"`
 	StrokeCount int       `json:"strokeCount"`
+	// 印刷枠の設定と前回の印刷内容(フロントエンドが決めた形のまま保存する)
+	Frame json.RawMessage `json:"frame,omitempty"`
 }
 
 type SaveRequest struct {
@@ -49,6 +51,8 @@ type SaveRequest struct {
 	Thumb       string            `json:"thumb"`  // data URL
 	// 貼り付け画像の配置 [{id,x,y,w,h}...] (配列の順が重なり順)。nil なら変更しない
 	Pics json.RawMessage `json:"pics"`
+	// 印刷枠。nil なら変更しない
+	Frame json.RawMessage `json:"frame"`
 }
 
 const (
@@ -178,6 +182,9 @@ func (s *Store) Save(id string, r *SaveRequest) (*Meta, error) {
 	m.Title = r.Title
 	if r.Paper != "" {
 		m.Paper = r.Paper
+	}
+	if len(r.Frame) > 0 {
+		m.Frame = r.Frame
 	}
 	m.BBox = r.BBox
 	m.CacheScale = r.CacheScale

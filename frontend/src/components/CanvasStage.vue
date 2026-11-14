@@ -1,7 +1,7 @@
 <script setup>
 // 描画キャンバス: ポインタ入力・ズーム・ブラシ円の表示
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { cur, tool, st, zoom, spaceDown, pushColor, persist, playback } from '../store.js';
+import { cur, frame, framePx, tool, st, zoom, spaceDown, pushColor, persist, playback } from '../store.js';
 import { createEngine } from '../documents.js';
 import PlaybackBar from './PlaybackBar.vue';
 
@@ -12,7 +12,7 @@ const cursor = reactive({ x: 0, y: 0, in: false });
 let engine = null;
 let ro = null;
 
-const showRing = computed(() => tool.value !== 'hand' && tool.value !== 'image' && !spaceDown.value && !playback.active);
+const showRing = computed(() => tool.value !== 'image' && tool.value !== 'frame' && !spaceDown.value && !playback.active);
 const ringStyle = computed(() => {
   const d = Math.max(4, st[tool.value] ? st[tool.value].size * zoom.value : 4);
   return { width: d + 'px', height: d + 'px', transform: `translate(${cursor.x - d / 2}px, ${cursor.y - d / 2}px)` };
@@ -32,6 +32,7 @@ function pressureOf(e) {
 
 // ---------- 入力 ----------
 let mode = null; // 'draw' | 'pan'
+let frameOff = [0, 0];
 let lastX = 0, lastY = 0, smoothX = 0, smoothY = 0, smoothP = 0.5;
 
 function onDown(e) {
@@ -39,11 +40,18 @@ function onDown(e) {
   canvas.value.setPointerCapture(e.pointerId);
   const r = canvas.value.getBoundingClientRect();
   const sx = e.clientX - r.left, sy = e.clientY - r.top;
-  if (e.button === 1 || e.button === 2 || tool.value === 'hand' || spaceDown.value) {
+  if (e.button === 1 || e.button === 2 || spaceDown.value) {
     mode = 'pan'; lastX = e.clientX; lastY = e.clientY;
     return;
   }
   if (e.button !== 0 || engine.pb) return; // 再生中は描けない
+  if (tool.value === 'frame') {
+    const [wx, wy] = engine.screenToWorld(sx, sy);
+    if (frame.on && wx >= frame.x && wx <= frame.x + framePx(frame.wCm, frame.dpi) && wy >= frame.y && wy <= frame.y + framePx(frame.hCm, frame.dpi)) {
+      mode = 'frame'; frameOff = [wx - frame.x, wy - frame.y];
+    } else { mode = 'pan'; lastX = e.clientX; lastY = e.clientY; }
+    return;
+  }
   if (tool.value === 'image') {
     const [wx, wy] = engine.screenToWorld(sx, sy);
     if (engine.picDown(wx, wy)) mode = 'pic';
@@ -65,6 +73,10 @@ function onMove(e) {
   if (mode === 'pan') {
     engine.panBy(e.clientX - lastX, e.clientY - lastY);
     lastX = e.clientX; lastY = e.clientY;
+  } else if (mode === 'frame') {
+    const r = canvas.value.getBoundingClientRect();
+    const [wx, wy] = engine.screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    frame.x = Math.round(wx - frameOff[0]); frame.y = Math.round(wy - frameOff[1]);
   } else if (mode === 'pic') {
     const r = canvas.value.getBoundingClientRect();
     const [wx, wy] = engine.screenToWorld(e.clientX - r.left, e.clientY - r.top);
@@ -103,6 +115,10 @@ function onWheel(e) {
   zoom.value = engine.view.zoom;
 }
 
+watch(() => [frame.on, frame.x, frame.y, frame.wCm, frame.hCm, frame.dpi], () => {
+  if (!engine) return;
+  engine.setFrame(frame.on ? { x: frame.x, y: frame.y, w: framePx(frame.wCm, frame.dpi), h: framePx(frame.hCm, frame.dpi) } : null);
+});
 watch(tool, (t) => { if (t !== 'image' && engine) engine.deselect(); });
 
 onMounted(() => {
@@ -125,7 +141,7 @@ onBeforeUnmount(() => ro && ro.disconnect());
 
 <template>
   <main class="stage" ref="stage">
-    <canvas ref="canvas" :class="{pan: tool === 'hand' || spaceDown, ring: showRing}"></canvas>
+    <canvas ref="canvas" :class="{pan: spaceDown, ring: showRing}"></canvas>
     <div class="brush-cursor" v-show="showRing && cursor.in" :style="ringStyle"></div>
     <PlaybackBar />
     <div class="hud">{{ Math.round(zoom * 100) }}%<span v-if="penInfo"> ・ {{ penInfo }}</span></div>

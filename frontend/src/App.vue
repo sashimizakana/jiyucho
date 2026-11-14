@@ -5,13 +5,14 @@ import { init, undo, redo, stopPlayback, pasteImageBlob, deleteSelectedPic } fro
 import AppHeader from './components/AppHeader.vue';
 import ImageList from './components/ImageList.vue';
 import CanvasStage from './components/CanvasStage.vue';
-import ToolPicker from './components/ToolPicker.vue';
+import ImagePanel from './components/ImagePanel.vue';
 import ToolPanel from './components/ToolPanel.vue';
 import PaperPanel from './components/PaperPanel.vue';
 import ViewControls from './components/ViewControls.vue';
+import FramePanel from './components/FramePanel.vue';
 import ExportDialog from './components/ExportDialog.vue';
 
-const showExport = ref(false);
+const showExport = ref(''); // '' | 'normal' | 'frame'
 
 function onKey(e) {
   const el = document.activeElement;
@@ -50,15 +51,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppHeader @export="showExport = true" />
+  <AppHeader @export="showExport = 'normal'" />
   <ImageList />
   <CanvasStage />
   <aside class="right">
-    <ToolPicker />
     <ToolPanel kind="line" />
     <ToolPanel kind="brush" />
+    <ImagePanel />
     <PaperPanel />
+    <FramePanel @print="showExport = 'frame'" />
     <ViewControls />
   </aside>
-  <ExportDialog v-if="showExport" @close="showExport = false" />
+  <ExportDialog v-if="showExport" :frame="showExport === 'frame'" @close="showExport = ''" />
 </template>

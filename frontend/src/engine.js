@@ -30,6 +30,7 @@ export class Engine {
     this.bbox = null; // {x0,y0,x1,y1}
     this.sprites = new Map();
     this.pics = []; // 貼り付け画像 {id,img,x,y,w,h}。配列の後ろほど手前(常に線・筆より下)
+    this.frame = null; // 印刷枠 {x,y,w,h}(ワールド座標)
     this.sel = null; // 選択中の画像id
     this.drag = null;
     this.pointer = null; // マウスがキャンバス内にあるときの画面座標 {x,y}
@@ -638,6 +639,29 @@ export class Engine {
     }
   }
 
+  setFrame(f) { this.frame = f; this.requestRender(); }
+
+  drawFrame(ctx) {
+    const f = this.frame;
+    if (!f) return;
+    const v = this.view;
+    const X = (x) => (x - v.cx) * v.zoom + this.W / 2, Y = (y) => (y - v.cy) * v.zoom + this.H / 2;
+    const x0 = X(f.x), y0 = Y(f.y), w = f.w * v.zoom, h = f.h * v.zoom;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.beginPath();
+    ctx.rect(0, 0, this.W, this.H);
+    ctx.rect(x0, y0, w, h);
+    ctx.fill('evenodd');
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(x0, y0, w, h);
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = '#e8452c';
+    ctx.strokeRect(x0, y0, w, h);
+    ctx.setLineDash([]);
+  }
+
   // ---- 表示 ----
   requestRender() {
     if (this._raf) return;
@@ -674,6 +698,7 @@ export class Engine {
     this.drawPics(ctx);
     this.drawTiles(ctx, x0, y0, x1, y1);
     this.drawSelection(ctx);
+    this.drawFrame(ctx);
     if (this.onView) this.onView();
   }
 

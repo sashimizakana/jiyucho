@@ -1,8 +1,9 @@
 <script setup>
 import { ref } from 'vue';
 import { cur } from '../store.js';
-import { exportPng } from '../documents.js';
+import { exportPng, exportFramePng } from '../documents.js';
 
+const props = defineProps({ frame: Boolean });
 const emit = defineEmits(['close']);
 
 const bgs = [
@@ -19,7 +20,8 @@ const bgValue = (k) => ({
 })[k];
 
 function download() {
-  exportPng(bg.value === 'transparent' ? null : bgValue(bg.value));
+  const v = bg.value === 'transparent' ? null : bgValue(bg.value);
+  props.frame ? exportFramePng(v) : exportPng(v);
   emit('close');
 }
 </script>
@@ -27,7 +29,7 @@ function download() {
 <template>
   <div class="modal" @click.self="emit('close')">
     <div class="dialog">
-      <h2><i class="fa-solid fa-file-export"></i> PNG書き出し</h2>
+      <h2><i class="fa-solid fa-file-export"></i> {{ frame ? '印刷枠の書き出し' : 'PNG書き出し' }}</h2>
       <p class="sub">背景色</p>
       <div class="bgs">
         <label v-for="b in bgs" :key="b.k" :class="{on: bg === b.k}">

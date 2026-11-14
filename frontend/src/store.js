@@ -16,7 +16,7 @@ export const PAPERS = [
 export const cur = reactive({ id: '', title: '', paper: '#e8dcbc' });
 export const images = ref([]);
 
-// ツール: 'line' | 'brush' | 'eraseLine' | 'eraseBrush' | 'hand'
+// ツール: 'line' | 'brush' | 'eraseLine' | 'eraseBrush' | 'image' | 'frame'
 export const tool = ref('line');
 export const st = reactive({
   line: { color: '#2b2b2b', size: 3, history: ['#2b2b2b', '#c0392b', '#2c6fbb'] },
@@ -24,6 +24,20 @@ export const st = reactive({
   eraseLine: { size: 12 },
   eraseBrush: { size: 40 },
 });
+
+// 印刷枠(ワールド座標1単位 = 書き出し1px。x,y は枠の左上)
+export const FRAME_PRESETS = [
+  { n: 'A3', w: 29.7, h: 42 }, { n: 'A4', w: 21, h: 29.7 }, { n: 'A5', w: 14.8, h: 21 },
+  { n: 'B5', w: 18.2, h: 25.7 }, { n: 'B6', w: 12.8, h: 18.2 },
+  { n: 'L版', w: 8.9, h: 12.7 }, { n: '2L版', w: 12.7, h: 17.8 },
+  { n: 'はがき', w: 10, h: 14.8 }, { n: '名刺', w: 5.5, h: 9.1 },
+];
+// 絵ごとに保存される。lastPrint は前回の印刷内容 {at, bg, dpi, wCm, hCm}
+const frameDefaults = () => ({ on: false, dpi: 350, wCm: 21, hCm: 29.7, x: 0, y: 0, placed: false, lastPrint: null });
+export const frame = reactive(frameDefaults());
+export const frameData = () => ({ ...frame });
+export const setFrame = (f) => Object.assign(frame, frameDefaults(), f || {});
+export const framePx = (cm, dpi) => Math.max(1, Math.round(cm / 2.54 * dpi));
 
 export const status = ref('');
 export const zoom = ref(1);
@@ -46,7 +60,7 @@ export function persist() {
       method: 'PUT',
       body: JSON.stringify({
         line: st.line, brush: st.brush, eraseLine: st.eraseLine, eraseBrush: st.eraseBrush,
-        tool: tool.value === 'hand' ? 'line' : tool.value, last: cur.id,
+        tool: tool.value === 'image' || tool.value === 'frame' ? 'line' : tool.value, last: cur.id,
       }),
     }).catch(() => {});
   }, 400);

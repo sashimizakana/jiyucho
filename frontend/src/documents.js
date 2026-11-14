@@ -1,6 +1,7 @@
 // 絵の読み込み・保存・書き出しと、描画エンジンの保持
 import { Engine } from './engine.js';
-import { cur, tool, images, status, zoom, canUndo, canRedo, persist, loadSettings, playback } from './store.js';
+import { watch } from 'vue';
+import { cur, frame, frameData, setFrame, framePx, tool, images, status, zoom, canUndo, canRedo, persist, loadSettings, playback } from './store.js';
 
 const PLAY_BASE = 200; // 再生速度 1倍 = 200点/秒
 
@@ -29,6 +30,9 @@ let saving = false;
 let pending = false;
 // サーバーに保存済みのストローク(参照で比較して、先頭からの共通部分だけを残し、残りを差分として送る)
 let savedStrokes = [];
+// 印刷枠の設定が変わったら保存する(絵を開いた直後の読み込みでは保存しない)
+let frameSaved = JSON.stringify(frameData());
+watch(() => JSON.stringify(frameData()), (s) => { if (s !== frameSaved && cur.id) scheduleSave(); });
 
 export function scheduleSave() {
   status.value = '未保存…';
@@ -84,7 +88,7 @@ async function save() {
       method: 'PUT',
       body: JSON.stringify({
         title: cur.title, paper: cur.paper, base, append: strokes.slice(base),
-        pics, bbox: bb, cacheScale: scale, strokeCount: engine.strokes.length,
+        frame: frameData(), pics, bbox: bb, cacheScale: scale, strokeCount: engine.strokes.length,
         layers, thumb: makeThumb(bb),
       }),
     });
@@ -94,6 +98,7 @@ async function save() {
     if (i >= 0) images.value.splice(i, 1);
     images.value.unshift(meta);
     savedStrokes = strokes;
+    if (id === cur.id) frameSaved = JSON.stringify(frameData());
     status.value = '保存しました';
   } catch (e) {
     savedStrokes = []; // 次回は全ストロークを送り直す
@@ -153,6 +158,9 @@ export async function openImage(id) {
   const d = await (await fetch('/api/images/' + id)).json();
   cur.id = d.meta.id; cur.title = d.meta.title; cur.paper = d.meta.paper;
   engine.setPaper(cur.paper);
+  setFrame(d.meta.frame);
+  frameSaved = JSON.stringify(frameData());
+  if (tool.value === 'frame' && !frame.on) tool.value = 'line';
   engine.load(d.strokes, (d.pics || []).map((p) => loadPic(cur.id, p)));
   savedStrokes = engine.strokes.slice();
   updateUndo();
@@ -169,6 +177,9 @@ export async function newImage() {
   images.value.unshift(meta);
   cur.id = meta.id; cur.title = ''; cur.paper = meta.paper;
   engine.setPaper(cur.paper);
+  setFrame(null);
+  frameSaved = JSON.stringify(frameData());
+  if (tool.value === 'frame') tool.value = 'line';
   engine.load([], []);
   savedStrokes = [];
   updateUndo();
@@ -214,13 +225,56 @@ export function exportPng(bg) {
   const bb = engine.getBBoxAll(16) || { x: -256, y: -256, w: 512, h: 512 };
   const s = Math.min(1, 8192 / Math.max(bb.w, bb.h));
   const c = engine.renderRegion(bb, s, bg, true);
-  c.toBlob((blob) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (cur.title.trim() || 'sketch').replace(/[\\/:*?"<>|]/g, '_') + '.png';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  }, 'image/png');
+  c.toBlob((blob) => downloadBlob(blob), 'image/png');
+}
+
+function downloadBlob(blob, suffix = '') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (cur.title.trim() || 'sketch').replace(/[\\/:*?"<>|]/g, '_') + suffix + '.png';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ---------- 印刷枠の書き出し ----------
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// PNG の IHDR の直後に pHYs チャンク(解像度)を差し込む
+async function withDpi(blob, dpi) {
+  const src = new Uint8Array(await blob.arrayBuffer());
+  const ppm = Math.round(dpi / 0.0254);
+  const chunk = new Uint8Array(21); // 長さ4 + 種別4 + データ9 + CRC4
+  const dv = new DataView(chunk.buffer);
+  dv.setUint32(0, 9);
+  chunk.set([0x70, 0x48, 0x59, 0x73], 4); // 'pHYs'
+  dv.setUint32(8, ppm); dv.setUint32(12, ppm); chunk[16] = 1; // メートルあたり
+  dv.setUint32(17, crc32(chunk.subarray(4, 17)));
+  const at = 33; // 署名8 + IHDR(12+13)
+  const out = new Uint8Array(src.length + chunk.length);
+  out.set(src.subarray(0, at), 0);
+  out.set(chunk, at);
+  out.set(src.subarray(at), at + chunk.length);
+  return new Blob([out], { type: 'image/png' });
+}
+
+export function exportFramePng(bg) {
+  frame.lastPrint = { at: new Date().toISOString(), bg: bg || 'transparent', dpi: frame.dpi, wCm: frame.wCm, hCm: frame.hCm };
+  const bb = { x: frame.x, y: frame.y, w: framePx(frame.wCm, frame.dpi), h: framePx(frame.hCm, frame.dpi) };
+  const c = engine.renderRegion(bb, 1, bg, true);
+  c.toBlob(async (blob) => downloadBlob(await withDpi(blob, frame.dpi), `_${frame.dpi}dpi`), 'image/png');
 }
 
 // ---------- 起動 ----------
