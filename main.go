@@ -128,7 +128,7 @@ func runServer(store *Store, port int, open bool, dataDir string) {
 			http.Error(w, err.Error(), 404)
 			return
 		}
-		jsonOut(w, map[string]any{"meta": m, "strokes": strokes}, nil)
+		jsonOut(w, map[string]any{"meta": m, "strokes": strokes, "pics": store.Pics(m.ID)}, nil)
 	})
 	mux.HandleFunc("PUT /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var req SaveRequest
@@ -150,6 +150,18 @@ func runServer(store *Store, port int, open bool, dataDir string) {
 		}
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, p)
+	})
+	mux.HandleFunc("GET /api/images/{id}/pics/{pid}", func(w http.ResponseWriter, r *http.Request) {
+		p := store.PicPath(r.PathValue("id"), r.PathValue("pid"))
+		if _, err := os.Stat(p); p == "" || err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		http.ServeFile(w, r, p)
+	})
+	mux.HandleFunc("PUT /api/images/{id}/pics/{pid}", func(w http.ResponseWriter, r *http.Request) {
+		jsonOut(w, map[string]bool{"ok": true}, store.SavePic(r.PathValue("id"), r.PathValue("pid"), r.Body))
 	})
 	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

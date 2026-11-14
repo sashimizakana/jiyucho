@@ -29,6 +29,10 @@ export class Engine {
     this.view = { cx: 0, cy: 0, zoom: 1 };
     this.bbox = null; // {x0,y0,x1,y1}
     this.sprites = new Map();
+    this.pics = []; // 貼り付け画像 {id,img,x,y,w,h}。配列の後ろほど手前(常に線・筆より下)
+    this.sel = null; // 選択中の画像id
+    this.drag = null;
+    this.pointer = null; // マウスがキャンバス内にあるときの画面座標 {x,y}
     this.cur = null; // 描画中のストローク
     this.scratch = new Map(); // 描画中の筆ストローク用レイヤー
     this._raf = 0;
@@ -73,7 +77,7 @@ export class Engine {
   resetView() { this.view = { cx: 0, cy: 0, zoom: 1 }; this.requestRender(); }
 
   fitView() {
-    const b = this.getBBox();
+    const b = this.getBBoxAll();
     if (!b) return this.resetView();
     const z = Math.min(this.W / (b.w + 80), this.H / (b.h + 80), 4);
     this.view = { cx: b.x + b.w / 2, cy: b.y + b.h / 2, zoom: Math.max(0.05, z) };
@@ -342,18 +346,120 @@ export class Engine {
     this.requestRender();
   }
 
-  load(strokes) {
+  // ---- 再生(描いた順に点を流し込み直す。速度は点数/秒の一定速度) ----
+  clearCanvas() {
+    this.layers.brush.clear();
+    this.layers.line.clear();
+    this.scratch.clear();
+    this.bbox = null;
+  }
+
+  pbNotify() {
+    const pb = this.pb;
+    if (this.onPlayback) this.onPlayback(pb ? { pos: pb.pos, total: pb.total, playing: pb.playing } : null);
+  }
+
+  startPlayback(rate) {
+    let total = 0;
+    for (const s of this.strokes) total += s.p.length / 3;
+    this.cur = null;
+    this.pb = { i: 0, st: null, k: 0, pos: 0, total, playing: true, acc: 0, last: 0, raf: 0, rate, view: { ...this.view } };
+    this.clearCanvas();
+    this.requestRender();
+    this.pbNotify();
+    this.pbLoop();
+  }
+
+  pbAdvance(n) {
+    const pb = this.pb;
+    while (n > 0 && pb.i < this.strokes.length) {
+      const s = this.strokes[pb.i];
+      if (!pb.st) { pb.st = this.newState(s); pb.k = 0; }
+      const cnt = s.p.length / 3;
+      const take = Math.min(n, cnt - pb.k);
+      for (let j = 0; j < take; j++) {
+        const q = (pb.k + j) * 3;
+        this.feed(pb.st, s.p[q], s.p[q + 1], s.p[q + 2]);
+      }
+      pb.k += take; pb.pos += take; n -= take;
+      if (pb.k >= cnt) {
+        if (s.t === 'brush') this.brushFinish(pb.st);
+        pb.st = null; pb.i++;
+      }
+    }
+  }
+
+  pbLoop() {
+    const pb = this.pb;
+    if (!pb || pb.raf || !pb.playing) return;
+    const step = (t) => {
+      pb.raf = 0;
+      if (this.pb !== pb || !pb.playing) return;
+      const dt = pb.last ? Math.min(0.1, (t - pb.last) / 1000) : 0;
+      pb.last = t;
+      pb.acc += dt * pb.rate;
+      const n = Math.floor(pb.acc);
+      pb.acc -= n;
+      if (n > 0) this.pbAdvance(n);
+      if (pb.pos >= pb.total) pb.playing = false;
+      this.requestRender();
+      this.pbNotify();
+      if (pb.playing) pb.raf = requestAnimationFrame(step);
+    };
+    pb.raf = requestAnimationFrame(step);
+  }
+
+  pbSetPlaying(v) {
+    const pb = this.pb;
+    if (!pb) return;
+    if (v && pb.pos >= pb.total) this.pbSeek(0);
+    pb.playing = v;
+    pb.last = 0;
+    this.pbNotify();
+    this.pbLoop();
+  }
+
+  pbSetRate(rate) { if (this.pb) this.pb.rate = rate; }
+
+  pbSeek(n) {
+    const pb = this.pb;
+    if (!pb) return;
+    this.clearCanvas();
+    pb.i = 0; pb.st = null; pb.k = 0; pb.pos = 0; pb.acc = 0;
+    this.pbAdvance(Math.max(0, Math.min(pb.total, Math.floor(n))));
+    if (pb.pos >= pb.total) pb.playing = false;
+    this.requestRender();
+    this.pbNotify();
+  }
+
+  // restoreView: 再生前の表示位置に戻して、絵を完成状態に組み直す
+  stopPlayback(restoreView = true) {
+    const pb = this.pb;
+    if (!pb) return;
+    cancelAnimationFrame(pb.raf);
+    this.pb = null;
+    this.scratch.clear();
+    if (restoreView) { this.rebuild(); this.view = pb.view; }
+    this.requestRender();
+    this.pbNotify();
+  }
+
+  load(strokes, pics) {
+    this.stopPlayback(false);
     this.strokes = strokes || [];
+    this.pics = pics || [];
+    this.sel = null; this.drag = null;
     this.redoStack = [];
     this.cur = null;
     this.rebuild();
     // 開いたときは 100% で、絵の中心を表示する
-    const b = this.getBBox();
+    const b = this.getBBoxAll();
     this.view = { cx: b ? b.x + b.w / 2 : 0, cy: b ? b.y + b.h / 2 : 0, zoom: 1 };
     this.requestRender();
   }
 
   beginStroke(tool, color, size) {
+    if (this.pb) return;
     this.cur = this.newState({ t: tool, c: color, s: size, p: [] });
     this.redoStack = [];
   }
@@ -386,14 +492,14 @@ export class Engine {
   }
 
   undo() {
-    if (!this.strokes.length) return;
+    if (this.pb || !this.strokes.length) return;
     this.redoStack.push(this.strokes.pop());
     this.rebuild();
     if (this.onChange) this.onChange();
   }
 
   redo() {
-    if (!this.redoStack.length) return;
+    if (this.pb || !this.redoStack.length) return;
     const s = this.redoStack.pop();
     this.strokes.push(s);
     this.replay(s);
@@ -406,6 +512,130 @@ export class Engine {
     const b = this.bbox;
     if (!b) return null;
     return { x: b.x0 - margin, y: b.y0 - margin, w: b.x1 - b.x0 + margin * 2, h: b.y1 - b.y0 + margin * 2 };
+  }
+
+  // 画像も含めた範囲
+  getBBoxAll(margin = 0) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const b = this.bbox;
+    if (b) { x0 = b.x0; y0 = b.y0; x1 = b.x1; y1 = b.y1; }
+    for (const p of this.pics) {
+      x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + p.h);
+    }
+    if (x0 === Infinity) return null;
+    return { x: x0 - margin, y: y0 - margin, w: x1 - x0 + margin * 2, h: y1 - y0 + margin * 2 };
+  }
+
+  // ---- 貼り付け画像 ----
+  // img: drawable (canvas / Image)。表示中心に収まる大きさで置く
+  addPic(img, blob) {
+    const nw = img.width, nh = img.height;
+    const z = this.view.zoom;
+    const k = Math.min(1, (this.W * 0.6) / z / nw, (this.H * 0.6) / z / nh);
+    const w = nw * k, h = nh * k;
+    const p = {
+      id: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
+      img, blob, uploaded: false, x: 0, y: 0, w, h,
+    };
+    const [cx, cy] = this.pointer ? this.screenToWorld(this.pointer.x, this.pointer.y) : [this.view.cx, this.view.cy];
+    p.x = cx - w / 2; p.y = cy - h / 2;
+    this.pics.push(p);
+    this.sel = p.id;
+    this.requestRender();
+    if (this.onChange) this.onChange();
+    return p;
+  }
+
+  removeSelPic() {
+    if (!this.sel) return false;
+    this.pics = this.pics.filter((p) => p.id !== this.sel);
+    this.sel = null; this.drag = null;
+    this.requestRender();
+    if (this.onChange) this.onChange();
+    return true;
+  }
+
+  deselect() {
+    if (this.sel || this.drag) { this.sel = null; this.drag = null; this.requestRender(); }
+  }
+
+  selPic() { return this.sel ? this.pics.find((p) => p.id === this.sel) : null; }
+
+  // 押下。画像に当たったら選択して最前面へ(true)。何もなければ選択解除(false)
+  picDown(wx, wy) {
+    const tol = 9 / this.view.zoom;
+    const sp = this.selPic();
+    if (sp) {
+      for (let iy = 0; iy < 2; iy++) for (let ix = 0; ix < 2; ix++) {
+        const cx = sp.x + ix * sp.w, cy = sp.y + iy * sp.h;
+        if (Math.abs(wx - cx) <= tol && Math.abs(wy - cy) <= tol) {
+          this.drag = { type: 'resize', p: sp, ax: ix ? sp.x : sp.x + sp.w, ay: iy ? sp.y : sp.y + sp.h,
+            sx: ix ? 1 : -1, sy: iy ? 1 : -1, w0: sp.w, h0: sp.h, moved: false };
+          return true;
+        }
+      }
+    }
+    for (let i = this.pics.length - 1; i >= 0; i--) {
+      const p = this.pics[i];
+      if (wx >= p.x && wx <= p.x + p.w && wy >= p.y && wy <= p.y + p.h) {
+        this.pics.splice(i, 1);
+        this.pics.push(p); // 最後に操作した画像が画像の中で一番上
+        this.sel = p.id;
+        this.drag = { type: 'move', p, ox: wx - p.x, oy: wy - p.y, moved: i !== this.pics.length - 1 };
+        this.requestRender();
+        return true;
+      }
+    }
+    this.deselect();
+    return false;
+  }
+
+  picDrag(wx, wy) {
+    const d = this.drag;
+    if (!d) return;
+    const p = d.p;
+    if (d.type === 'move') {
+      p.x = wx - d.ox; p.y = wy - d.oy;
+    } else {
+      const minS = 16 / Math.min(d.w0, d.h0);
+      const s = Math.max(minS, (wx - d.ax) * d.sx / d.w0, (wy - d.ay) * d.sy / d.h0);
+      p.w = d.w0 * s; p.h = d.h0 * s;
+      p.x = d.sx > 0 ? d.ax : d.ax - p.w;
+      p.y = d.sy > 0 ? d.ay : d.ay - p.h;
+    }
+    d.moved = true;
+    this.requestRender();
+  }
+
+  picUp() {
+    const d = this.drag;
+    this.drag = null;
+    if (d && d.moved && this.onChange) this.onChange();
+  }
+
+  drawPics(ctx) {
+    for (const p of this.pics) {
+      if (p.img.complete === false) continue;
+      ctx.drawImage(p.img, p.x, p.y, p.w, p.h);
+    }
+  }
+
+  drawSelection(ctx) {
+    const p = this.selPic();
+    if (!p || this.pb) return;
+    const v = this.view, dpr = this.dpr;
+    const X = (x) => (x - v.cx) * v.zoom + this.W / 2, Y = (y) => (y - v.cy) * v.zoom + this.H / 2;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const x0 = X(p.x), y0 = Y(p.y), x1 = X(p.x + p.w), y1 = Y(p.y + p.h);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#2c6fbb';
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = '#fff';
+    for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+      ctx.fillRect(x - 5, y - 5, 10, 10);
+      ctx.strokeRect(x - 5, y - 5, 10, 10);
+    }
   }
 
   // ---- 表示 ----
@@ -441,13 +671,15 @@ export class Engine {
     ctx.imageSmoothingEnabled = true;
     const [x0, y0] = this.screenToWorld(0, 0);
     const [x1, y1] = this.screenToWorld(this.W, this.H);
+    this.drawPics(ctx);
     this.drawTiles(ctx, x0, y0, x1, y1);
+    this.drawSelection(ctx);
     if (this.onView) this.onView();
   }
 
   // ---- 書き出し用 ----
   // bb(ワールド座標の矩形)を scale 倍で描いた canvas を返す。bg が null なら透明。
-  renderRegion(bb, scale, bg) {
+  renderRegion(bb, scale, bg, withPics = false) {
     const c = document.createElement('canvas');
     c.width = Math.max(1, Math.ceil(bb.w * scale));
     c.height = Math.max(1, Math.ceil(bb.h * scale));
@@ -456,6 +688,7 @@ export class Engine {
     g.setTransform(scale, 0, 0, scale, -bb.x * scale, -bb.y * scale);
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
+    if (withPics) this.drawPics(g);
     this.drawTiles(g, bb.x, bb.y, bb.x + bb.w, bb.y + bb.h);
     return c;
   }

@@ -1,8 +1,9 @@
 <script setup>
 // 描画キャンバス: ポインタ入力・ズーム・ブラシ円の表示
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
-import { cur, tool, st, zoom, spaceDown, pushColor, persist } from '../store.js';
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { cur, tool, st, zoom, spaceDown, pushColor, persist, playback } from '../store.js';
 import { createEngine } from '../documents.js';
+import PlaybackBar from './PlaybackBar.vue';
 
 const canvas = ref(null);
 const stage = ref(null);
@@ -11,7 +12,7 @@ const cursor = reactive({ x: 0, y: 0, in: false });
 let engine = null;
 let ro = null;
 
-const showRing = computed(() => tool.value !== 'hand' && !spaceDown.value);
+const showRing = computed(() => tool.value !== 'hand' && tool.value !== 'image' && !spaceDown.value && !playback.active);
 const ringStyle = computed(() => {
   const d = Math.max(4, st[tool.value] ? st[tool.value].size * zoom.value : 4);
   return { width: d + 'px', height: d + 'px', transform: `translate(${cursor.x - d / 2}px, ${cursor.y - d / 2}px)` };
@@ -20,6 +21,7 @@ const ringStyle = computed(() => {
 function trackCursor(e) {
   const r = canvas.value.getBoundingClientRect();
   cursor.x = e.clientX - r.left; cursor.y = e.clientY - r.top; cursor.in = true;
+  if (engine) engine.pointer = { x: cursor.x, y: cursor.y };
 }
 
 function pressureOf(e) {
@@ -41,7 +43,13 @@ function onDown(e) {
     mode = 'pan'; lastX = e.clientX; lastY = e.clientY;
     return;
   }
-  if (e.button !== 0) return;
+  if (e.button !== 0 || engine.pb) return; // 再生中は描けない
+  if (tool.value === 'image') {
+    const [wx, wy] = engine.screenToWorld(sx, sy);
+    if (engine.picDown(wx, wy)) mode = 'pic';
+    else { mode = 'pan'; lastX = e.clientX; lastY = e.clientY; } // 画像の外はドラッグで視点移動
+    return;
+  }
   mode = 'draw';
   const k = tool.value;
   if (k === 'eraseLine') engine.beginStroke('erase', 'line', st[k].size);
@@ -57,6 +65,10 @@ function onMove(e) {
   if (mode === 'pan') {
     engine.panBy(e.clientX - lastX, e.clientY - lastY);
     lastX = e.clientX; lastY = e.clientY;
+  } else if (mode === 'pic') {
+    const r = canvas.value.getBoundingClientRect();
+    const [wx, wy] = engine.screenToWorld(e.clientX - r.left, e.clientY - r.top);
+    engine.picDrag(wx, wy);
   } else if (mode === 'draw') {
     const r = canvas.value.getBoundingClientRect();
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
@@ -71,6 +83,7 @@ function onMove(e) {
 }
 
 function onUp(e) {
+  if (mode === 'pic') engine.picUp();
   if (mode === 'draw') {
     const r = canvas.value.getBoundingClientRect();
     const [wx, wy] = engine.screenToWorld(e.clientX - r.left, e.clientY - r.top);
@@ -90,6 +103,8 @@ function onWheel(e) {
   zoom.value = engine.view.zoom;
 }
 
+watch(tool, (t) => { if (t !== 'image' && engine) engine.deselect(); });
+
 onMounted(() => {
   engine = createEngine(canvas.value);
   ro = new ResizeObserver(() => engine.resize());
@@ -100,7 +115,7 @@ onMounted(() => {
   c.addEventListener('pointermove', onMove);
   c.addEventListener('pointerup', onUp);
   c.addEventListener('pointercancel', onUp);
-  c.addEventListener('pointerleave', () => { cursor.in = false; });
+  c.addEventListener('pointerleave', () => { cursor.in = false; if (engine) engine.pointer = null; });
   c.addEventListener('pointerenter', trackCursor);
   c.addEventListener('wheel', onWheel, { passive: false });
   c.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -112,6 +127,7 @@ onBeforeUnmount(() => ro && ro.disconnect());
   <main class="stage" ref="stage">
     <canvas ref="canvas" :class="{pan: tool === 'hand' || spaceDown, ring: showRing}"></canvas>
     <div class="brush-cursor" v-show="showRing && cursor.in" :style="ringStyle"></div>
+    <PlaybackBar />
     <div class="hud">{{ Math.round(zoom * 100) }}%<span v-if="penInfo"> ・ {{ penInfo }}</span></div>
   </main>
 </template>

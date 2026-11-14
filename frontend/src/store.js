@@ -31,6 +31,9 @@ export const canUndo = ref(false);
 export const canRedo = ref(false);
 export const spaceDown = ref(false);
 
+// 再生モード(speed は倍率。基準は documents.js の PLAY_BASE 点/秒)
+export const playback = reactive({ active: false, playing: false, pos: 0, total: 0, speed: 4 });
+
 // 'line' → 'eraseLine'
 export const eraserOf = (kind) => (kind === 'line' ? 'eraseLine' : 'eraseBrush');
 

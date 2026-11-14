@@ -47,6 +47,8 @@ type SaveRequest struct {
 	StrokeCount int               `json:"strokeCount"`
 	Layers      string            `json:"layers"` // data URL (透明PNG・描画範囲のみ)
 	Thumb       string            `json:"thumb"`  // data URL
+	// 貼り付け画像の配置 [{id,x,y,w,h}...] (配列の順が重なり順)。nil なら変更しない
+	Pics json.RawMessage `json:"pics"`
 }
 
 const (
@@ -337,4 +339,86 @@ func readStrokes(d string) ([]byte, error) {
 	}
 	out.WriteByte(']')
 	return out.Bytes(), nil
+}
+
+// ---------- 貼り付け画像 ----------
+
+const picsFile = "pics.json"
+
+func (s *Store) Pics(id string) json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, err := s.dir(id)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	b, err := os.ReadFile(filepath.Join(d, picsFile))
+	if err != nil || !json.Valid(b) {
+		return json.RawMessage("[]")
+	}
+	return b
+}
+
+func validPicID(pid string) bool {
+	if pid == "" || len(pid) > 64 {
+		return false
+	}
+	for _, c := range pid {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) PicPath(id, pid string) string {
+	d, err := s.dir(id)
+	if err != nil || !validPicID(pid) {
+		return ""
+	}
+	return filepath.Join(d, "pics", pid+".png")
+}
+
+func (s *Store) SavePic(id, pid string, r io.Reader) error {
+	p := s.PicPath(id, pid)
+	if p == "" {
+		return errors.New("invalid id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.readMeta(id); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	b, err := io.ReadAll(io.LimitReader(r, 64<<20))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o644)
+}
+
+// 配置を保存し、どこからも参照されなくなった画像ファイルを消す
+func writePics(d string, raw json.RawMessage) error {
+	var list []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(d, picsFile), raw, 0o644); err != nil {
+		return err
+	}
+	keep := map[string]bool{}
+	for _, p := range list {
+		keep[p.ID+".png"] = true
+	}
+	entries, _ := os.ReadDir(filepath.Join(d, "pics"))
+	for _, e := range entries {
+		if !keep[e.Name()] {
+			os.Remove(filepath.Join(d, "pics", e.Name()))
+		}
+	}
+	return nil
 }
