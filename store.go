@@ -195,6 +195,11 @@ func (s *Store) Save(id string, r *SaveRequest) (*Meta, error) {
 			return nil, err
 		}
 	}
+	if len(r.Pics) > 0 {
+		if err := writePics(d, r.Pics); err != nil {
+			return nil, err
+		}
+	}
 	if r.BBox == nil {
 		os.Remove(filepath.Join(d, "layers.png"))
 	}
